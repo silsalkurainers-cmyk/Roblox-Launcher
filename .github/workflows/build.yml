@@ -27,4 +27,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Roblox-Launcher-Windows-x64
-          path: publish/Roblox-Launcher.exe
+          path: |
+            publish/Roblox-Launcher.exe
+            Run-Diagnostics.bat
