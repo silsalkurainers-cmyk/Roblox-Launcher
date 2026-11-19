@@ -8,10 +8,10 @@ namespace RobloxLauncher;
 
 internal static class Program
 {
-    [STAThread]
     private static readonly object LogLock = new();
     private static string LogPath => Path.Combine(AppContext.BaseDirectory, "Roblox-Launcher-error.log");
 
+    [STAThread]
     private static void Main()
     {
         try
@@ -20,7 +20,7 @@ internal static class Program
             Application.ThreadException += (_, e) =>
             {
                 Log("UI THREAD", e.Exception);
-                MessageBox.Show("The launcher encountered an error. Details were saved to:\\n" + LogPath + "\\n\\n" + e.Exception.Message,
+                MessageBox.Show("The launcher encountered an error. Details were saved to:" + Environment.NewLine + "" + LogPath + "" + Environment.NewLine + "" + Environment.NewLine + "" + e.Exception.Message,
                     "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
             };
             TaskScheduler.UnobservedTaskException += (_, e) => { Log("UNOBSERVED TASK", e.Exception); e.SetObserved(); };
@@ -31,7 +31,7 @@ internal static class Program
         catch (Exception ex)
         {
             Log("STARTUP", ex);
-            try { MessageBox.Show("Roblox Launcher could not start. Error log:\\n" + LogPath + "\\n\\n" + ex, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+            try { MessageBox.Show("Roblox Launcher could not start. Error log:" + Environment.NewLine + "" + LogPath + "" + Environment.NewLine + "" + Environment.NewLine + "" + ex, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
         }
     }
 
@@ -173,7 +173,7 @@ internal sealed class LauncherForm : Form
             await EnsureInstalledAsync(product);
 
             string executable = FindExecutable(product)
-                ?? throw new InvalidOperationException($"The {ProductName(product)} executable was not found after installation.");
+                ?? throw new InvalidOperationException($"The {GetProductName(product)} executable was not found after installation.");
 
             var start = new ProcessStartInfo
             {
@@ -186,11 +186,11 @@ internal sealed class LauncherForm : Form
                 start.ArgumentList.Add("roblox-player:1+launchmode:app");
 
             Process.Start(start);
-            SetStatus($"{ProductName(product)} launched.");
+            SetStatus($"{GetProductName(product)} launched.");
         }
         catch (Exception ex)
         {
-            Program.Log($"LAUNCH {ProductName(product)}", ex);
+            Program.Log($"LAUNCH {GetProductName(product)}", ex);
             SetStatus("Could not launch. Click again to retry.");
             MessageBox.Show(this, ex.Message, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
@@ -210,7 +210,7 @@ internal sealed class LauncherForm : Form
         Directory.CreateDirectory(installerDirectory);
         string installerPath = Path.Combine(installerDirectory, name);
 
-        SetStatus($"Downloading {ProductName(product)}...");
+        SetStatus($"Downloading {GetProductName(product)}...");
         using (var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
         {
             response.EnsureSuccessStatusCode();
@@ -218,14 +218,14 @@ internal sealed class LauncherForm : Form
             await response.Content.CopyToAsync(output);
         }
 
-        SetStatus($"Verifying {ProductName(product)} installer...");
+        SetStatus($"Verifying {GetProductName(product)} installer...");
         if (!HasValidRobloxSignature(installerPath))
         {
             TryDelete(installerPath);
-            throw new SecurityException($"The downloaded {ProductName(product)} installer did not have a valid Roblox Corporation signature. It was not run.");
+            throw new SecurityException($"The downloaded {GetProductName(product)} installer did not have a valid Roblox Corporation signature. It was not run.");
         }
 
-        SetStatus($"Installing {ProductName(product)}...");
+        SetStatus($"Installing {GetProductName(product)}...");
         Process.Start(new ProcessStartInfo
         {
             FileName = installerPath,
@@ -245,7 +245,7 @@ internal sealed class LauncherForm : Form
         }
 
         throw new TimeoutException(
-            $"{ProductName(product)} was not detected after 10 minutes. If its official installer is still open, finish the installation and click the button again.");
+            $"{GetProductName(product)} was not detected after 10 minutes. If its official installer is still open, finish the installation and click the button again.");
     }
 
     private bool HasValidRobloxSignature(string file)
@@ -404,7 +404,7 @@ internal sealed class LauncherForm : Form
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
 
-    private static string ProductName(Product product) =>
+    private static string GetProductName(Product product) =>
         product == Product.Player ? "Roblox Player" : "Roblox Studio";
 
     private void SetStatus(string message) => _status.Text = message;
