@@ -10,6 +10,7 @@ internal static class Program
 {
     private static readonly object LogLock = new();
     private static string LogPath => Path.Combine(AppContext.BaseDirectory, "Roblox-Launcher-error.log");
+    private static string TempLogPath => Path.Combine(Path.GetTempPath(), "Roblox-Launcher-error.log");
 
     [STAThread]
     private static void Main()
@@ -24,8 +25,10 @@ internal static class Program
                     "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
             };
             TaskScheduler.UnobservedTaskException += (_, e) => { Log("UNOBSERVED TASK", e.Exception); e.SetObserved(); };
-            Log("START", new Exception("Launcher started."));
+            Log("START", new Exception("Launcher Main() was entered."));
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             ApplicationConfiguration.Initialize();
+            Log("UI", new Exception("Windows Forms initialized; opening launcher window."));
             Application.Run(new LauncherForm());
         }
         catch (Exception ex)
@@ -37,14 +40,11 @@ internal static class Program
 
     internal static void Log(string stage, Exception ex)
     {
-        try
+        string entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {stage}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}";
+        lock (LogLock)
         {
-            lock (LogLock)
-                File.AppendAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {stage}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}", Encoding.UTF8);
-        }
-        catch
-        {
-            try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "Roblox-Launcher-error.log"), $"[{DateTime.Now:O}] {stage}: {ex}{Environment.NewLine}", Encoding.UTF8); } catch { }
+            try { File.AppendAllText(TempLogPath, entry, Encoding.UTF8); } catch { }
+            try { File.AppendAllText(LogPath, entry, Encoding.UTF8); } catch { }
         }
     }
 }
