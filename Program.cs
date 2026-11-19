@@ -2,16 +2,50 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Security;
 using System.Windows.Forms;
+using System.Text;
 
 namespace RobloxLauncher;
 
 internal static class Program
 {
     [STAThread]
+    private static readonly object LogLock = new();
+    private static string LogPath => Path.Combine(AppContext.BaseDirectory, "Roblox-Launcher-error.log");
+
     private static void Main()
     {
-        ApplicationConfiguration.Initialize();
-        Application.Run(new LauncherForm());
+        try
+        {
+            AppDomain.CurrentDomain.UnhandledException += (_, e) => Log("FATAL", e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()));
+            Application.ThreadException += (_, e) =>
+            {
+                Log("UI THREAD", e.Exception);
+                MessageBox.Show("The launcher encountered an error. Details were saved to:\\n" + LogPath + "\\n\\n" + e.Exception.Message,
+                    "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            };
+            TaskScheduler.UnobservedTaskException += (_, e) => { Log("UNOBSERVED TASK", e.Exception); e.SetObserved(); };
+            Log("START", new Exception("Launcher started."));
+            ApplicationConfiguration.Initialize();
+            Application.Run(new LauncherForm());
+        }
+        catch (Exception ex)
+        {
+            Log("STARTUP", ex);
+            try { MessageBox.Show("Roblox Launcher could not start. Error log:\\n" + LogPath + "\\n\\n" + ex, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+        }
+    }
+
+    internal static void Log(string stage, Exception ex)
+    {
+        try
+        {
+            lock (LogLock)
+                File.AppendAllText(LogPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {stage}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}", Encoding.UTF8);
+        }
+        catch
+        {
+            try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "Roblox-Launcher-error.log"), $"[{DateTime.Now:O}] {stage}: {ex}{Environment.NewLine}", Encoding.UTF8); } catch { }
+        }
     }
 }
 
@@ -119,6 +153,7 @@ internal sealed class LauncherForm : Form
         }
         catch (Exception ex)
         {
+            Program.Log("AUTO SETUP", ex);
             SetStatus("Setup needs attention. Click a launcher button to retry.");
             MessageBox.Show(this, ex.Message, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -155,6 +190,7 @@ internal sealed class LauncherForm : Form
         }
         catch (Exception ex)
         {
+            Program.Log($"LAUNCH {ProductName(product)}", ex);
             SetStatus("Could not launch. Click again to retry.");
             MessageBox.Show(this, ex.Message, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
@@ -228,14 +264,13 @@ internal sealed class LauncherForm : Form
         start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-NonInteractive");
         start.ArgumentList.Add("-ExecutionPolicy");
-        start.ArgumentList.Add("AllSigned");
+        start.ArgumentList.Add("Bypass");
         start.ArgumentList.Add("-Command");
         start.ArgumentList.Add(script);
 
         using var process = Process.Start(start);
         if (process is null) return false;
-        process.WaitForExit(30000);
-        if (!process.HasExited)
+        if (!process.WaitForExit(30000))
         {
             process.Kill(true);
             return false;
