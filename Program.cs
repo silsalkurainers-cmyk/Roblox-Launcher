@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Net.Http;
 using System.Security;
 using System.Text;
@@ -9,14 +10,18 @@ namespace RobloxLauncher;
 
 internal static class Program
 {
+    internal const string BuildId = "20261120-startup-trace-02";
     private static readonly object LogLock = new();
-    private static string TempLogPath => Path.Combine(Path.GetTempPath(), "Roblox-Launcher-startup.log");
-    private static string AppLogPath => Path.Combine(AppContext.BaseDirectory, "Roblox-Launcher-startup.log");
+    private static string TempLogPath => Path.Combine(Path.GetTempPath(), $"Roblox-Launcher-{BuildId}.log");
+    private static string AppLogPath => Path.Combine(AppContext.BaseDirectory, $"Roblox-Launcher-{BuildId}.log");
 
     [STAThread]
     private static int Main(string[] args)
     {
+        WriteLog("BUILD", $"BUILD-ID={BuildId}; executable={Environment.ProcessPath}; assembly={typeof(Program).Assembly.Location}");
         WriteLog("ENTRY", $"Process started. Windows={Environment.OSVersion}; 64-bit={Environment.Is64BitProcess}; BaseDirectory={AppContext.BaseDirectory}");
+        AppDomain.CurrentDomain.FirstChanceException += (_, e) => WriteLog("FIRST CHANCE EXCEPTION", e.Exception.ToString());
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => WriteLog("PROCESS EXIT", "The operating system is terminating the launcher process.");
         AppDomain.CurrentDomain.AssemblyResolve += ResolveAccessibilityAssembly;
         LogAccessibilityFile();
 
@@ -25,7 +30,9 @@ internal static class Program
             try
             {
                 _ = Assembly.Load(new AssemblyName("Accessibility, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35"));
+                WriteLog("SELF-TEST STAGE", "Accessibility assembly load starting.");
                 ApplicationConfiguration.Initialize();
+                WriteLog("SELF-TEST STAGE", "WinForms configuration completed.");
                 using var testForm = new LauncherForm();
                 WriteLog("SELF-TEST", "WinForms initialization and main window construction succeeded.");
                 return 0;
@@ -56,9 +63,11 @@ internal static class Program
                 e.SetObserved();
             };
 
+            WriteLog("STAGE", "Entering ApplicationConfiguration.Initialize.");
             ApplicationConfiguration.Initialize();
             WriteLog("WINFORMS", "ApplicationConfiguration.Initialize completed.");
 
+            WriteLog("STAGE", "Entering LauncherForm constructor.");
             using var form = new LauncherForm();
             WriteLog("FORM", "Main window constructed; starting message loop.");
             Application.Run(form);
@@ -148,9 +157,10 @@ internal sealed class LauncherForm : Form
 
     public LauncherForm()
     {
+        Program.WriteLog("FORM CONSTRUCTOR", "Entered LauncherForm constructor.");
         _portableRoblox = Path.Combine(_root, "Roblox");
 
-        Text = "Roblox Launcher";
+        Text = $"Roblox Launcher [{Program.BuildId}]";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
@@ -197,9 +207,11 @@ internal sealed class LauncherForm : Form
         buttonPanel.Controls.Add(_playerButton, 0, 0);
         buttonPanel.Controls.Add(_studioButton, 0, 1);
 
+        Program.WriteLog("FORM STAGE", "Controls created; adding controls to form.");
         Controls.Add(buttonPanel);
         Controls.Add(_status);
         Controls.Add(heading);
+        Program.WriteLog("FORM STAGE", $"Controls added. Count={Controls.Count}; client={ClientSize}.");
 
         _playerButton.Click += async (_, _) => await LaunchAsync(Product.Player);
         _studioButton.Click += async (_, _) => await LaunchAsync(Product.Studio);
@@ -214,7 +226,7 @@ internal sealed class LauncherForm : Form
             }
         };
 
-        Program.WriteLog("FORM CONSTRUCTOR", "Controls created successfully.");
+        Program.WriteLog("FORM CONSTRUCTOR", "Constructor completed successfully.");
     }
 
     private static Button CreateButton(string text) => new()
