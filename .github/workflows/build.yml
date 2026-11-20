@@ -60,16 +60,15 @@ jobs:
             if (-not (Test-Path (Join-Path "publish" $name))) { throw "Publish folder is missing $name" }
           }
           Copy-Item "Run-Diagnostics.bat" "publish/Run-Diagnostics.bat"
-          @"
-Roblox Launcher portable package
-Build ID: 20261120-startup-trace-02
-Git commit: $env:GITHUB_SHA
-
-Keep every file in this folder together.
-Start Roblox-Launcher.exe from this folder.
-The launcher writes its unique diagnostic log to:
-%TEMP%\Roblox-Launcher-20261120-startup-trace-02.log
-"@ | Set-Content "publish/BUILD-INFO.txt" -Encoding UTF8
+          @(
+            "Roblox Launcher portable package",
+            "Build ID: 20261120-startup-trace-02",
+            "Git commit: $env:GITHUB_SHA",
+            "",
+            "Keep every file in this folder together.",
+            "Start Roblox-Launcher.exe from this folder.",
+            "Diagnostic log: %TEMP%\Roblox-Launcher-20261120-startup-trace-02.log"
+          ) | Set-Content "publish/BUILD-INFO.txt" -Encoding UTF8
           Write-Host "Verified portable folder. Files: $((Get-ChildItem publish -File).Count)"
 
       - name: Upload portable folder
