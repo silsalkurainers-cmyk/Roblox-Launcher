@@ -20,8 +20,11 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Publish portable x64 executable
-        run: dotnet publish RobloxLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+      - name: Publish compressed portable x64 executable
+        shell: pwsh
+        run: |
+          dotnet publish RobloxLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
 
       - name: Smoke-test startup and form construction
         shell: pwsh
@@ -32,14 +35,36 @@ jobs:
             throw "Launcher self-test failed with exit code $($process.ExitCode)"
           }
 
-      - name: Stage launcher beside diagnostic script
-        run: Copy-Item publish\Roblox-Launcher.exe Roblox-Launcher.exe
+      - name: Create and verify portable ZIP
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "package"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "publish/Roblox-Launcher.exe" $stage
+          Copy-Item "Run-Diagnostics.bat" $stage
+          $zip = Join-Path $PWD "Roblox-Launcher-Windows-x64.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal -Force
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+            $names = @($archive.Entries | ForEach-Object { $_.FullName })
+            if ($names -notcontains "Roblox-Launcher.exe") { throw "ZIP is missing Roblox-Launcher.exe: $($names -join ', ')" }
+            if ($names -notcontains "Run-Diagnostics.bat") { throw "ZIP is missing Run-Diagnostics.bat: $($names -join ', ')" }
+            foreach ($entry in $archive.Entries) {
+              $stream = $entry.Open()
+              try { $buffer = New-Object byte[] 65536; while ($stream.Read($buffer, 0, $buffer.Length) -gt 0) {} }
+              finally { $stream.Dispose() }
+            }
+          }
+          finally { $archive.Dispose() }
+          Get-FileHash $zip -Algorithm SHA256 | Format-List
+          Write-Host "Verified package ZIP: $zip"
 
-
-      - name: Upload launcher
+      - name: Upload verified portable ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: Roblox-Launcher-Windows-x64
-          path: |
-            Roblox-Launcher.exe
-            Run-Diagnostics.bat
+          name: Roblox-Launcher-Portable-ZIP
+          path: Roblox-Launcher-Windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
