@@ -1,51 +1,95 @@
 using System.Diagnostics;
 using System.Net.Http;
 using System.Security;
-using System.Windows.Forms;
 using System.Text;
+using System.Windows.Forms;
 
 namespace RobloxLauncher;
 
 internal static class Program
 {
     private static readonly object LogLock = new();
-    private static string LogPath => Path.Combine(AppContext.BaseDirectory, "Roblox-Launcher-error.log");
-    private static string TempLogPath => Path.Combine(Path.GetTempPath(), "Roblox-Launcher-error.log");
+    private static string TempLogPath => Path.Combine(Path.GetTempPath(), "Roblox-Launcher-startup.log");
+    private static string AppLogPath => Path.Combine(AppContext.BaseDirectory, "Roblox-Launcher-startup.log");
 
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
     {
+        WriteLog("ENTRY", $"Process started. Windows={Environment.OSVersion}; 64-bit={Environment.Is64BitProcess}; BaseDirectory={AppContext.BaseDirectory}");
+
+        if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                ApplicationConfiguration.Initialize();
+                using var testForm = new LauncherForm();
+                WriteLog("SELF-TEST", "WinForms initialization and main window construction succeeded.");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                WriteLog("SELF-TEST FAILED", ex.ToString());
+                return 1;
+            }
+        }
+
         try
         {
-            AppDomain.CurrentDomain.UnhandledException += (_, e) => Log("FATAL", e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString()));
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += (_, e) =>
             {
-                Log("UI THREAD", e.Exception);
-                MessageBox.Show("The launcher encountered an error. Details were saved to:" + Environment.NewLine + "" + LogPath + "" + Environment.NewLine + "" + Environment.NewLine + "" + e.Exception.Message,
-                    "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                WriteLog("UI THREAD ERROR", e.Exception.ToString());
+                ShowFatalError(e.Exception);
             };
-            TaskScheduler.UnobservedTaskException += (_, e) => { Log("UNOBSERVED TASK", e.Exception); e.SetObserved(); };
-            Log("START", new Exception("Launcher Main() was entered."));
-            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            {
+                WriteLog("UNHANDLED ERROR", e.ExceptionObject?.ToString() ?? "Unknown fatal exception");
+                if (e.ExceptionObject is Exception ex) ShowFatalError(ex);
+            };
+            TaskScheduler.UnobservedTaskException += (_, e) =>
+            {
+                WriteLog("UNOBSERVED TASK ERROR", e.Exception.ToString());
+                e.SetObserved();
+            };
+
             ApplicationConfiguration.Initialize();
-            Log("UI", new Exception("Windows Forms initialized; opening launcher window."));
-            Application.Run(new LauncherForm());
+            WriteLog("WINFORMS", "ApplicationConfiguration.Initialize completed.");
+
+            using var form = new LauncherForm();
+            WriteLog("FORM", "Main window constructed; starting message loop.");
+            Application.Run(form);
+            WriteLog("EXIT", "Windows Forms message loop ended normally.");
+            return 0;
         }
         catch (Exception ex)
         {
-            Log("STARTUP", ex);
-            try { MessageBox.Show("Roblox Launcher could not start. Error log:" + Environment.NewLine + "" + LogPath + "" + Environment.NewLine + "" + Environment.NewLine + "" + ex, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error); } catch { }
+            WriteLog("FATAL STARTUP ERROR", ex.ToString());
+            ShowFatalError(ex);
+            return 1;
         }
     }
 
-    internal static void Log(string stage, Exception ex)
+    internal static void WriteLog(string stage, string message)
     {
-        string entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {stage}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}";
+        string entry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {stage}: {message}{Environment.NewLine}";
         lock (LogLock)
         {
             try { File.AppendAllText(TempLogPath, entry, Encoding.UTF8); } catch { }
-            try { File.AppendAllText(LogPath, entry, Encoding.UTF8); } catch { }
+            try { File.AppendAllText(AppLogPath, entry, Encoding.UTF8); } catch { }
         }
+    }
+
+    private static void ShowFatalError(Exception ex)
+    {
+        try
+        {
+            MessageBox.Show(
+                $"Roblox Launcher could not continue.{Environment.NewLine}{Environment.NewLine}{ex.Message}{Environment.NewLine}{Environment.NewLine}Log file:{Environment.NewLine}{TempLogPath}",
+                "Roblox Launcher - startup error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        catch { }
     }
 }
 
@@ -53,9 +97,9 @@ internal sealed class LauncherForm : Form
 {
     private const string PlayerInstallerUrl = "https://setup.rbxcdn.com/RobloxPlayerInstaller.exe";
     private const string StudioInstallerUrl = "https://setup.rbxcdn.com/RobloxStudioInstaller.exe";
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(8) };
 
-    private readonly string _root = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+    private readonly string _root = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     private readonly string _portableRoblox;
     private readonly string _localRoblox = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Roblox");
@@ -64,6 +108,7 @@ internal sealed class LauncherForm : Form
     private readonly Button _playerButton;
     private readonly Button _studioButton;
     private bool _busy;
+    private bool _setupStarted;
 
     public LauncherForm()
     {
@@ -74,19 +119,20 @@ internal sealed class LauncherForm : Form
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         MinimizeBox = true;
-        ClientSize = new Size(440, 280);
+        ClientSize = new Size(460, 290);
         BackColor = Color.FromArgb(14, 14, 16);
         ForeColor = Color.White;
         Font = new Font("Segoe UI", 10F);
+        ShowInTaskbar = true;
 
         var heading = new Label
         {
             Text = "ROBLOX LAUNCHER",
             ForeColor = Color.White,
-            Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold),
+            Font = new Font("Segoe UI", 17F, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleCenter,
             Dock = DockStyle.Top,
-            Height = 76
+            Height = 78
         };
 
         _playerButton = CreateButton("LAUNCH ROBLOX");
@@ -94,11 +140,11 @@ internal sealed class LauncherForm : Form
 
         _status = new Label
         {
-            Text = "Preparing portable Roblox...",
-            ForeColor = Color.FromArgb(160, 160, 168),
+            Text = "Window opened. Checking installation...",
+            ForeColor = Color.FromArgb(170, 170, 178),
             TextAlign = ContentAlignment.MiddleCenter,
             Dock = DockStyle.Bottom,
-            Height = 48,
+            Height = 52,
             Padding = new Padding(12, 0, 12, 8)
         };
 
@@ -107,7 +153,7 @@ internal sealed class LauncherForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 2,
-            Padding = new Padding(44, 8, 44, 8),
+            Padding = new Padding(42, 8, 42, 8),
             BackColor = BackColor
         };
         buttonPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
@@ -121,7 +167,18 @@ internal sealed class LauncherForm : Form
 
         _playerButton.Click += async (_, _) => await LaunchAsync(Product.Player);
         _studioButton.Click += async (_, _) => await LaunchAsync(Product.Studio);
-        Shown += async (_, _) => await PrepareBothAsync();
+
+        Shown += (_, _) =>
+        {
+            Program.WriteLog("WINDOW SHOWN", "The main launcher window is visible.");
+            if (!_setupStarted)
+            {
+                _setupStarted = true;
+                BeginInvoke(new Action(async () => await PrepareBothAsync()));
+            }
+        };
+
+        Program.WriteLog("FORM CONSTRUCTOR", "Controls created successfully.");
     }
 
     private static Button CreateButton(string text) => new()
@@ -130,9 +187,9 @@ internal sealed class LauncherForm : Form
         Dock = DockStyle.Fill,
         Margin = new Padding(0, 8, 0, 8),
         FlatStyle = FlatStyle.Flat,
-        BackColor = Color.FromArgb(37, 37, 42),
+        BackColor = Color.FromArgb(38, 38, 44),
         ForeColor = Color.White,
-        Font = new Font("Segoe UI Semibold", 10.5F, FontStyle.Bold),
+        Font = new Font("Segoe UI", 10.5F, FontStyle.Bold),
         Cursor = Cursors.Hand,
         UseVisualStyleBackColor = false
     };
@@ -141,21 +198,28 @@ internal sealed class LauncherForm : Form
     {
         if (_busy) return;
         SetBusy(true);
+
         try
         {
-            SetStatus("Setting up the portable folder...");
+            Program.WriteLog("SETUP", "Automatic first-run setup started.");
+            SetStatus("Preparing portable Roblox folder...");
             await Task.Run(EnsurePortableRedirect);
 
             await EnsureInstalledAsync(Product.Player);
             await EnsureInstalledAsync(Product.Studio);
 
-            SetStatus("Ready.");
+            SetStatus("Ready. Select Roblox or Roblox Studio.");
+            Program.WriteLog("SETUP", "Both products were detected; setup completed.");
         }
         catch (Exception ex)
         {
-            Program.Log("AUTO SETUP", ex);
-            SetStatus("Setup needs attention. Click a launcher button to retry.");
-            MessageBox.Show(this, ex.Message, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Program.WriteLog("SETUP FAILED", ex.ToString());
+            SetStatus("Setup did not finish. Check the startup log.");
+            MessageBox.Show(this,
+                $"{ex.Message}{Environment.NewLine}{Environment.NewLine}Log: {Path.Combine(Path.GetTempPath(), "Roblox-Launcher-startup.log")}",
+                "Roblox Launcher - setup error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
         finally
         {
@@ -167,32 +231,41 @@ internal sealed class LauncherForm : Form
     {
         if (_busy) return;
         SetBusy(true);
+
         try
         {
+            Program.WriteLog("LAUNCH", $"Requested {GetProductName(product)}.");
+            SetStatus("Checking portable folder...");
             await Task.Run(EnsurePortableRedirect);
             await EnsureInstalledAsync(product);
 
             string executable = FindExecutable(product)
-                ?? throw new InvalidOperationException($"The {GetProductName(product)} executable was not found after installation.");
+                ?? throw new FileNotFoundException($"The {GetProductName(product)} executable was not found after installation.");
 
+            Program.WriteLog("LAUNCH", $"Starting executable: {executable}");
             var start = new ProcessStartInfo
             {
                 FileName = executable,
                 WorkingDirectory = Path.GetDirectoryName(executable)!,
-                UseShellExecute = false
+                UseShellExecute = true
             };
 
-            if (product == Product.Player)
-                start.ArgumentList.Add("roblox-player:1+launchmode:app");
+            using var process = Process.Start(start);
+            if (process is null)
+                throw new InvalidOperationException($"Windows did not create a process for {GetProductName(product)}.");
 
-            Process.Start(start);
-            SetStatus($"{GetProductName(product)} launched.");
+            SetStatus($"{GetProductName(product)} launch request sent.");
+            Program.WriteLog("LAUNCH", $"Process created. PID={process.Id}.");
         }
         catch (Exception ex)
         {
-            Program.Log($"LAUNCH {GetProductName(product)}", ex);
-            SetStatus("Could not launch. Click again to retry.");
-            MessageBox.Show(this, ex.Message, "Roblox Launcher", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            Program.WriteLog($"LAUNCH FAILED - {GetProductName(product)}", ex.ToString());
+            SetStatus("Could not launch. See the startup log.");
+            MessageBox.Show(this,
+                $"{ex.Message}{Environment.NewLine}{Environment.NewLine}Log: {Path.Combine(Path.GetTempPath(), "Roblox-Launcher-startup.log")}",
+                "Roblox Launcher - launch error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
         }
         finally
         {
@@ -202,64 +275,90 @@ internal sealed class LauncherForm : Form
 
     private async Task EnsureInstalledAsync(Product product)
     {
-        if (FindExecutable(product) is not null) return;
+        string? installed = FindExecutable(product);
+        if (installed is not null)
+        {
+            Program.WriteLog("INSTALL CHECK", $"{GetProductName(product)} already installed at {installed}");
+            return;
+        }
 
-        string name = product == Product.Player ? "RobloxPlayerInstaller.exe" : "RobloxStudioInstaller.exe";
-        string url = product == Product.Player ? PlayerInstallerUrl : StudioInstallerUrl;
+        string installerName = product == Product.Player ? "RobloxPlayerInstaller.exe" : "RobloxStudioInstaller.exe";
+        string downloadUrl = product == Product.Player ? PlayerInstallerUrl : StudioInstallerUrl;
         string installerDirectory = Path.Combine(_root, "Installers");
         Directory.CreateDirectory(installerDirectory);
-        string installerPath = Path.Combine(installerDirectory, name);
+        string installerPath = Path.Combine(installerDirectory, installerName);
 
+        Program.WriteLog("DOWNLOAD", $"Downloading {GetProductName(product)} from official Roblox CDN.");
         SetStatus($"Downloading {GetProductName(product)}...");
-        using (var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead))
+        using (var response = await Http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead))
         {
             response.EnsureSuccessStatusCode();
-            await using var output = File.Create(installerPath);
+            await using var output = new FileStream(installerPath, FileMode.Create, FileAccess.Write, FileShare.None);
             await response.Content.CopyToAsync(output);
         }
+
+        var installerInfo = new FileInfo(installerPath);
+        Program.WriteLog("DOWNLOAD", $"Downloaded {installerInfo.Length} bytes to {installerPath}");
+        if (installerInfo.Length < 100_000)
+            throw new InvalidDataException($"The downloaded {GetProductName(product)} installer is unexpectedly small.");
 
         SetStatus($"Verifying {GetProductName(product)} installer...");
         if (!HasValidRobloxSignature(installerPath))
         {
             TryDelete(installerPath);
-            throw new SecurityException($"The downloaded {GetProductName(product)} installer did not have a valid Roblox Corporation signature. It was not run.");
+            throw new SecurityException($"The downloaded {GetProductName(product)} installer does not have a valid Roblox Corporation signature. It was not run.");
         }
 
-        SetStatus($"Installing {GetProductName(product)}...");
-        Process.Start(new ProcessStartInfo
+        Program.WriteLog("INSTALL", $"Authenticode signature verified for {installerPath}");
+        SetStatus($"Opening {GetProductName(product)} installer...");
+        using var installer = Process.Start(new ProcessStartInfo
         {
             FileName = installerPath,
             WorkingDirectory = installerDirectory,
             UseShellExecute = true
         });
 
-        var deadline = DateTime.UtcNow.AddMinutes(10);
+        if (installer is null)
+            throw new InvalidOperationException($"Windows could not start the {GetProductName(product)} installer.");
+
+        Program.WriteLog("INSTALL", $"Installer process started for {GetProductName(product)}. PID={installer.Id}");
+
+        var deadline = DateTime.UtcNow.AddMinutes(8);
+        var nextStatus = DateTime.UtcNow;
         while (DateTime.UtcNow < deadline)
         {
-            if (FindExecutable(product) is not null)
+            installed = FindExecutable(product);
+            if (installed is not null)
             {
+                Program.WriteLog("INSTALL", $"{GetProductName(product)} detected at {installed}");
                 TryDelete(installerPath);
                 return;
             }
-            await Task.Delay(2500);
+
+            if (DateTime.UtcNow >= nextStatus)
+            {
+                SetStatus($"Waiting for {GetProductName(product)} installer...");
+                nextStatus = DateTime.UtcNow.AddSeconds(15);
+            }
+
+            await Task.Delay(2000);
         }
 
         throw new TimeoutException(
-            $"{GetProductName(product)} was not detected after 10 minutes. If its official installer is still open, finish the installation and click the button again.");
+            $"{GetProductName(product)} was not detected after 8 minutes. Check whether its official installer is still open, then click its button again.");
     }
 
-    private bool HasValidRobloxSignature(string file)
+    private static bool HasValidRobloxSignature(string file)
     {
         string escaped = file.Replace("'", "''");
         string script = "$s=Get-AuthenticodeSignature -LiteralPath '" + escaped +
             "'; if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch 'Roblox Corporation') { exit 1 }";
+
         var start = new ProcessStartInfo
         {
-            FileName = "powershell.exe",
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe"),
             UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true
+            CreateNoWindow = true
         };
         start.ArgumentList.Add("-NoProfile");
         start.ArgumentList.Add("-NonInteractive");
@@ -270,9 +369,9 @@ internal sealed class LauncherForm : Form
 
         using var process = Process.Start(start);
         if (process is null) return false;
-        if (!process.WaitForExit(30000))
+        if (!process.WaitForExit(30_000))
         {
-            process.Kill(true);
+            try { process.Kill(true); } catch { }
             return false;
         }
         return process.ExitCode == 0;
@@ -283,31 +382,33 @@ internal sealed class LauncherForm : Form
         string versions = Path.Combine(_localRoblox, "Versions");
         if (!Directory.Exists(versions)) return null;
 
-        string fileName = product == Product.Player ? "RobloxPlayerBeta.exe" : "RobloxStudioBeta.exe";
+        string[] names = product == Product.Player
+            ? new[] { "RobloxPlayerLauncher.exe", "RobloxPlayerBeta.exe" }
+            : new[] { "RobloxStudioBeta.exe", "RobloxStudioLauncherBeta.exe" };
+
         try
         {
-            return Directory.GetDirectories(versions)
-                .Select(path => Path.Combine(path, fileName))
+            var candidates = Directory.GetDirectories(versions)
+                .SelectMany(directory => names.Select(name => Path.Combine(directory, name)))
                 .Where(File.Exists)
-                .OrderByDescending(File.GetLastWriteTimeUtc)
-                .FirstOrDefault();
+                .OrderByDescending(File.GetLastWriteTimeUtc);
+
+            return candidates.FirstOrDefault();
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
-        {
+            Program.WriteLog("FIND EXECUTABLE", ex.ToString());
             return null;
         }
     }
 
     private void EnsurePortableRedirect()
     {
+        Program.WriteLog("PORTABLE", $"Preparing link {_localRoblox} -> {_portableRoblox}");
         Directory.CreateDirectory(_root);
 
         if (File.Exists(_localRoblox))
-            throw new IOException($"A file already exists at {_localRoblox}. It must be moved before portable setup can continue.");
+            throw new IOException($"A file exists at {_localRoblox}; it cannot be used as the Roblox data directory.");
 
         if (Directory.Exists(_localRoblox))
         {
@@ -315,12 +416,18 @@ internal sealed class LauncherForm : Form
             if ((existing.Attributes & FileAttributes.ReparsePoint) != 0)
             {
                 string? resolved = existing.ResolveLinkTarget(true)?.FullName;
-                if (resolved is not null && PathsEqual(resolved, _portableRoblox)) return;
-                throw new IOException("Your existing Roblox folder is already a junction to a different location. The launcher left it unchanged.");
+                if (resolved is not null && PathsEqual(resolved, _portableRoblox))
+                {
+                    Directory.CreateDirectory(_portableRoblox);
+                    Program.WriteLog("PORTABLE", "Existing junction already points to the portable data folder.");
+                    return;
+                }
+
+                throw new IOException("The standard Roblox folder is already a junction to a different location. The launcher left it unchanged.");
             }
 
             if (IsRobloxRunning())
-                throw new IOException("Close Roblox Player and Roblox Studio before moving the existing installation into the portable folder.");
+                throw new IOException("Close Roblox Player and Roblox Studio before the launcher moves the existing Roblox folder.");
 
             Directory.CreateDirectory(_portableRoblox);
             CopyDirectoryContents(_localRoblox, _portableRoblox);
@@ -337,12 +444,16 @@ internal sealed class LauncherForm : Form
                 throw;
             }
 
-            try { Directory.Delete(backup, true); } catch { }
+            try { Directory.Delete(backup, true); }
+            catch (Exception ex) { Program.WriteLog("PORTABLE BACKUP CLEANUP", ex.ToString()); }
+
+            Program.WriteLog("PORTABLE", "Existing Roblox data migrated and junction created.");
             return;
         }
 
         Directory.CreateDirectory(_portableRoblox);
         CreateJunction(_localRoblox, _portableRoblox);
+        Program.WriteLog("PORTABLE", "New portable Roblox data folder and junction created.");
     }
 
     private static void CopyDirectoryContents(string source, string destination)
@@ -351,6 +462,7 @@ internal sealed class LauncherForm : Form
         {
             var info = new DirectoryInfo(directory);
             if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+
             string target = Path.Combine(destination, info.Name);
             Directory.CreateDirectory(target);
             CopyDirectoryContents(directory, target);
@@ -358,8 +470,9 @@ internal sealed class LauncherForm : Form
 
         foreach (string file in Directory.GetFiles(source))
         {
-            string target = Path.Combine(destination, Path.GetFileName(file));
-            File.Copy(file, target, true);
+            var info = new FileInfo(file);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+            File.Copy(file, Path.Combine(destination, info.Name), true);
         }
     }
 
@@ -367,11 +480,9 @@ internal sealed class LauncherForm : Form
     {
         var start = new ProcessStartInfo
         {
-            FileName = "cmd.exe",
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"),
             UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true
+            CreateNoWindow = true
         };
         start.ArgumentList.Add("/c");
         start.ArgumentList.Add("mklink");
@@ -380,23 +491,28 @@ internal sealed class LauncherForm : Form
         start.ArgumentList.Add(target);
 
         using var process = Process.Start(start)
-            ?? throw new IOException("Windows could not start the junction command.");
-        string output = process.StandardOutput.ReadToEnd();
-        string error = process.StandardError.ReadToEnd();
-        process.WaitForExit();
+            ?? throw new IOException("Windows could not start the command needed to create the portable folder junction.");
+
+        if (!process.WaitForExit(30_000))
+        {
+            try { process.Kill(true); } catch { }
+            throw new TimeoutException("Windows timed out while creating the portable Roblox folder junction.");
+        }
+
         if (process.ExitCode != 0)
-            throw new IOException("Could not create the portable Roblox folder junction. " + output + " " + error);
+            throw new IOException($"Windows could not create the portable Roblox folder junction (exit code {process.ExitCode}).");
     }
 
     private static bool IsRobloxRunning()
     {
-        string[] names = { "RobloxPlayerBeta", "RobloxStudioBeta", "RobloxPlayerLauncher" };
+        string[] names = { "RobloxPlayerBeta", "RobloxPlayerLauncher", "RobloxStudioBeta", "RobloxStudioLauncherBeta" };
         return names.Any(name => Process.GetProcessesByName(name).Length > 0);
     }
 
     private static bool PathsEqual(string first, string second) =>
-        string.Equals(Path.GetFullPath(first).TrimEnd(Path.DirectorySeparatorChar),
-            Path.GetFullPath(second).TrimEnd(Path.DirectorySeparatorChar),
+        string.Equals(
+            Path.GetFullPath(first).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(second).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
             StringComparison.OrdinalIgnoreCase);
 
     private static void TryDelete(string path)
