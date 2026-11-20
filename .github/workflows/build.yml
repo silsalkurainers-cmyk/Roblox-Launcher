@@ -23,10 +23,13 @@ jobs:
       - name: Publish portable x64 executable
         run: dotnet publish RobloxLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
 
+      - name: Stage launcher beside diagnostic script
+        run: Copy-Item publish\Roblox-Launcher.exe Roblox-Launcher.exe
+
       - name: Upload launcher
         uses: actions/upload-artifact@v4
         with:
           name: Roblox-Launcher-Windows-x64
           path: |
-            publish/Roblox-Launcher.exe
+            Roblox-Launcher.exe
             Run-Diagnostics.bat
