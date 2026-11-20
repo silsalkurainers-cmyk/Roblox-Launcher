@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Net.Http;
 using System.Security;
 using System.Text;
@@ -16,11 +17,14 @@ internal static class Program
     private static int Main(string[] args)
     {
         WriteLog("ENTRY", $"Process started. Windows={Environment.OSVersion}; 64-bit={Environment.Is64BitProcess}; BaseDirectory={AppContext.BaseDirectory}");
+        AppDomain.CurrentDomain.AssemblyResolve += ResolveAccessibilityAssembly;
+        LogAccessibilityFile();
 
         if (args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
         {
             try
             {
+                _ = Assembly.Load(new AssemblyName("Accessibility, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35"));
                 ApplicationConfiguration.Initialize();
                 using var testForm = new LauncherForm();
                 WriteLog("SELF-TEST", "WinForms initialization and main window construction succeeded.");
@@ -66,6 +70,38 @@ internal static class Program
             WriteLog("FATAL STARTUP ERROR", ex.ToString());
             ShowFatalError(ex);
             return 1;
+        }
+    }
+
+    private static void LogAccessibilityFile()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "Accessibility.dll");
+        WriteLog("DEPENDENCY CHECK", $"Accessibility.dll exists={File.Exists(path)}; path={path}");
+    }
+
+    private static Assembly? ResolveAccessibilityAssembly(object? sender, ResolveEventArgs args)
+    {
+        AssemblyName requested;
+        try { requested = new AssemblyName(args.Name); }
+        catch { return null; }
+
+        if (!string.Equals(requested.Name, "Accessibility", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        string path = Path.Combine(AppContext.BaseDirectory, "Accessibility.dll");
+        WriteLog("ASSEMBLY RESOLVE", $"Requested={args.Name}; candidate={path}; exists={File.Exists(path)}");
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            Assembly loaded = Assembly.LoadFrom(path);
+            WriteLog("ASSEMBLY RESOLVE", $"Loaded Accessibility from {path}; identity={loaded.FullName}");
+            return loaded;
+        }
+        catch (Exception ex)
+        {
+            WriteLog("ASSEMBLY RESOLVE FAILED", ex.ToString());
+            return null;
         }
     }
 
