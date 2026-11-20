@@ -20,11 +20,13 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Publish compressed portable x64 executable
+      - name: Publish portable x64 folder (no single-file extraction)
         shell: pwsh
         run: |
-          dotnet publish RobloxLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
+          dotnet publish RobloxLauncher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:UseAppHost=true -o publish
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
+          if (-not (Test-Path "publish/Roblox-Launcher.exe")) { throw "Published launcher EXE is missing" }
+          if (-not (Test-Path "publish/Roblox-Launcher.dll")) { throw "Published launcher assembly is missing" }
 
       - name: Smoke-test startup and form construction
         shell: pwsh
@@ -35,36 +37,20 @@ jobs:
             throw "Launcher self-test failed with exit code $($process.ExitCode)"
           }
 
-      - name: Create and verify portable ZIP
+      - name: Verify portable folder contents
         shell: pwsh
         run: |
-          $stage = Join-Path $PWD "package"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item "publish/Roblox-Launcher.exe" $stage
-          Copy-Item "Run-Diagnostics.bat" $stage
-          $zip = Join-Path $PWD "Roblox-Launcher-Windows-x64.zip"
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal -Force
-          Add-Type -AssemblyName System.IO.Compression
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
-          try {
-            $names = @($archive.Entries | ForEach-Object { $_.FullName })
-            if ($names -notcontains "Roblox-Launcher.exe") { throw "ZIP is missing Roblox-Launcher.exe: $($names -join ', ')" }
-            if ($names -notcontains "Run-Diagnostics.bat") { throw "ZIP is missing Run-Diagnostics.bat: $($names -join ', ')" }
-            foreach ($entry in $archive.Entries) {
-              $stream = $entry.Open()
-              try { $buffer = New-Object byte[] 65536; while ($stream.Read($buffer, 0, $buffer.Length) -gt 0) {} }
-              finally { $stream.Dispose() }
-            }
+          $required = @("Roblox-Launcher.exe", "Roblox-Launcher.dll", "Roblox-Launcher.deps.json", "Roblox-Launcher.runtimeconfig.json")
+          foreach ($name in $required) {
+            if (-not (Test-Path (Join-Path "publish" $name))) { throw "Publish folder is missing $name" }
           }
-          finally { $archive.Dispose() }
-          Get-FileHash $zip -Algorithm SHA256 | Format-List
-          Write-Host "Verified package ZIP: $zip"
+          Copy-Item "Run-Diagnostics.bat" "publish/Run-Diagnostics.bat"
+          Write-Host "Verified portable folder. Files: $((Get-ChildItem publish -File).Count)"
 
-      - name: Upload verified portable ZIP
+      - name: Upload portable folder
         uses: actions/upload-artifact@v4
         with:
-          name: Roblox-Launcher-Portable-ZIP
-          path: Roblox-Launcher-Windows-x64.zip
+          name: Roblox-Launcher-Windows-x64-Portable
+          path: publish/
           if-no-files-found: error
           compression-level: 0
